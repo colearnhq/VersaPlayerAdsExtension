@@ -6,6 +6,7 @@
 //  Copyright © 2018 Quasar. All rights reserved.
 //
 
+import AVFoundation
 import Foundation
 import GoogleInteractiveMediaAds
 import VersaPlayer
@@ -22,45 +23,52 @@ public class VersaPlayerAdsManager: VersaPlayerExtension, IMAAdsLoaderDelegate, 
     public var tag: String!
     public var showingAds: Bool = false
     public var adsRenderingSettings: IMAAdsRenderingSettings!
-    
+
     public init(with player: VersaPlayerView, presentingIn controller: UIViewController, and delegate: VersaPlayerAdsManagerDisplayDelegate? = nil) {
         super.init(with: player)
-        self.behaviour = VersaPlayerAdManagerBehaviour()
-        self.behaviour.handler = self
+        behaviour = VersaPlayerAdManagerBehaviour()
+        behaviour.handler = self
         self.controller = controller
-        self.displayDelegate = delegate
+        displayDelegate = delegate
         setUpContentPlayer()
         setUpAdsLoader()
         player.addObserver(self, forKeyPath: "isPipModeEnabled", options: NSKeyValueObservingOptions.new, context: nil)
     }
-    
-    override public func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+
+    override public func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
         if keyPath == "isPipModeEnabled" {
             if let value = change?[NSKeyValueChangeKey.newKey] as? Bool {
                 requestAds(using: value)
             }
         }
     }
-    
+
     public func setUpAdsLoader() {
-        let settings = IMASettings.init()
+        let settings = IMASettings()
         settings.autoPlayAdBreaks = displayDelegate?.shouldAutoPlayAds() ?? true
         adsLoader = IMAAdsLoader(settings: settings)
         adsLoader!.delegate = self
     }
-    
+
     public func requestAds(using pip: Bool = false) {
-        let adDisplayContainer = IMAAdDisplayContainer(adContainer: player.renderingView, companionSlots: self.adsManager == nil ? nil : displayDelegate?.companionSlots(for: self.adsManager!))
+
+        let adDisplayContainer = IMAAdDisplayContainer(
+            adContainer: player.renderingView,
+            viewController: controller,
+            companionSlots: adsManager == nil
+                ? nil : displayDelegate?.companionSlots(for: adsManager!)
+        )
         var request: IMAAdsRequest
         if !pip {
             request = IMAAdsRequest(
                 adTagUrl: tag,
                 adDisplayContainer: adDisplayContainer,
                 contentPlayhead: contentPlayhead,
-                userContext: nil)
-        }else {
+                userContext: nil
+            )
+        } else {
             if pipProxy == nil {
-                pipProxy = IMAPictureInPictureProxy(avPictureInPictureControllerDelegate: player.pipController?.delegate)
+                pipProxy = IMAPictureInPictureProxy(avPictureInPictureControllerDelegate: player.pipController!.delegate!)
                 player.pipController?.delegate = pipProxy
             }
             let display = IMAAVPlayerVideoDisplay(avPlayer: player.player)
@@ -68,25 +76,24 @@ public class VersaPlayerAdsManager: VersaPlayerExtension, IMAAdsLoaderDelegate, 
                 adTagUrl: tag,
                 adDisplayContainer: adDisplayContainer,
                 avPlayerVideoDisplay: display,
-                pictureInPictureProxy: pipProxy,
-                userContext: nil)
+                pictureInPictureProxy: pipProxy!,
+                userContext: nil
+            )
         }
-        
         adsLoader!.requestAds(with: request)
     }
-    
-    public func adsLoader(_ loader: IMAAdsLoader!, adsLoadedWith adsLoadedData: IMAAdsLoadedData!) {
+
+    public func adsLoader(_ loader: IMAAdsLoader, adsLoadedWith adsLoadedData: IMAAdsLoadedData) {
         displayDelegate?.ads(loader: loader, didLoad: adsLoadedData)
         adsManager = adsLoadedData.adsManager
         adsManager!.delegate = self
         adsRenderingSettings = displayDelegate?.renderingSettings(for: adsManager!)
-        
+
         adsManager!.initialize(with: adsRenderingSettings)
     }
-    
-    public func adsLoader(_ loader: IMAAdsLoader!, failedWith adErrorData: IMAAdLoadingErrorData!) {
+
+    public func adsLoader(_ loader: IMAAdsLoader, failedWith adErrorData: IMAAdLoadingErrorData) {
         displayDelegate?.ads(loader: loader, failedWith: adErrorData)
-        print(adErrorData.adError.message)
     }
 
     public func setUpContentPlayer() {
@@ -104,40 +111,50 @@ public class VersaPlayerAdsManager: VersaPlayerExtension, IMAAdsLoaderDelegate, 
         if let obj = notification.object as? AVPlayerItem {
             if obj == player.player.currentItem {
                 adsLoader?.contentComplete()
-            }else if showingAds {
-                displayDelegate?.adsDidFinishPlaying()
-                showingAds = false
-                behaviour.didEndAd()
+            } else if showingAds {
+                performOperationAfterDidShowAd()
             }
         }
     }
-    
-    public func adsManager(_ adsManager: IMAAdsManager!, didReceive event: IMAAdEvent!) {
+
+    public func adsManager(_ adsManager: IMAAdsManager, didReceive event: IMAAdEvent) {
         displayDelegate?.ads(manager: adsManager, didReceiveEvent: event)
         if displayDelegate?.shouldAutoPlayAds() ?? true {
-            if (event.type == IMAAdEventType.LOADED) {
-                showingAds = true
-                behaviour.willShowAdsFor(player: player.player)
+            if event.type == IMAAdEventType.LOADED {
                 adsManager.start()
             }
         }
     }
-    
-    public func adsManager(_ adsManager: IMAAdsManager!, didReceive error: IMAAdError!) {
+
+    public func adsManager(_ adsManager: IMAAdsManager, didReceive error: IMAAdError) {
         displayDelegate?.ads(manager: adsManager, didReceiveError: error)
         player.play()
     }
-    
-    public func adsManagerDidRequestContentPause(_ adsManager: IMAAdsManager!) {
+
+    public func adsManagerDidRequestContentPause(_ adsManager: IMAAdsManager) {
         displayDelegate?.adsManagerDidRequestContentPause(adsManager)
-        player.pause()
+        performOperationBeforeAdShow()
     }
-    
-    public func adsManagerDidRequestContentResume(_ adsManager: IMAAdsManager!) {
+
+    public func adsManagerDidRequestContentResume(_ adsManager: IMAAdsManager) {
         displayDelegate?.adsManagerDidRequestContentResume(adsManager)
+        performOperationAfterDidShowAd()
+    }
+
+    private func performOperationAfterDidShowAd() {
+        displayDelegate?.adsDidFinishPlaying()
+        showingAds = false
+        behaviour.didEndAd()
         if !player.isPlaying {
             player.play()
         }
     }
-    
+
+    private func performOperationBeforeAdShow() {
+        player.pause()
+        showingAds = true
+        behaviour.willShowAdsFor(player: player.player)
+    }
+
 }
+
